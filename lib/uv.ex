@@ -2,6 +2,43 @@ defmodule Uv do
   # https://github.com/astral-sh/uv/releases
   @latest_version "0.4.2"
 
+  @moduledoc """
+  Uv is an installer and runner for [`uv`](https://docs.astral.sh/uv/).
+
+  ## Profiles
+
+  You can define multiple uv profiles. These correspond to uv projects.
+  By default, there is a profile called `:default` for which you can 
+  configure its current directory and environment:
+
+      config :uv,
+        version: "#{@latest_version}",
+        default: [
+          cd: Path.expand("../python_project", __DIR__),
+          env: %{}
+        ]
+
+  ## Uv configuration
+
+  There are three global configurations for the uv application:
+
+    * `:version` - the expected uv version
+
+    * `:cacerts_path` - the directory to find certificates for
+      https connections
+
+    * `:path` - the path to find the uv executable at. By
+      default, it is automatically downloaded and placed inside
+      the `_build` directory of your current app
+
+  If you would prefer to use your system `uv`, you can store it in a
+  `MIX_UV_PATH` environment variable, which you can then read in
+  your configuration file:
+
+      config :uv, path: System.get_env("MIX_UV_PATH")
+
+  """
+
   require Logger
 
   @doc """
