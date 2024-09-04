@@ -2,7 +2,103 @@ defmodule Uv do
   # https://github.com/astral-sh/uv/releases
   @latest_version "0.4.2"
 
+  @moduledoc """
+  Uv is an installer and runner for [`uv`](https://docs.astral.sh/uv/).
+
+  ## Profiles
+
+  You can define multiple uv profiles. These correspond to uv projects.
+  By default, there is a profile called `:default` for which you can 
+  configure its current directory and environment:
+
+      config :uv,
+        version: "#{@latest_version}",
+        default: [
+          cd: Path.expand("../python_project", __DIR__),
+          env: %{}
+        ]
+
+  ## Uv configuration
+
+  There are three global configurations for the uv application:
+
+    * `:version` - the expected uv version
+
+    * `:cacerts_path` - the directory to find certificates for
+      https connections
+
+    * `:path` - the path to find the uv executable at. By
+      default, it is automatically downloaded and placed inside
+      the `_build` directory of your current app
+
+  If you would prefer to use your system `uv`, you can store it in a
+  `MIX_UV_PATH` environment variable, which you can then read in
+  your configuration file:
+
+      config :uv, path: System.get_env("MIX_UV_PATH")
+
+  """
+
+  use Application
   require Logger
+
+  @doc false
+  def start(_, _) do
+    unless Application.get_env(:uv, :version) do
+      Logger.warning("""
+      uv version is not configured. Please set it in your config files:
+
+          config :uv, :version, "#{latest_version()}"
+      """)
+    end
+
+    configured_version = configured_version()
+
+    case bin_version() do
+      {:ok, ^configured_version} ->
+        :ok
+
+      {:ok, version} ->
+        Logger.warning("""
+        Outdated uv version. Expected #{configured_version}, got #{version}. \
+        Please run `mix uv.install` or update the version in your config files.\
+        """)
+
+      :error ->
+        :ok
+    end
+
+    Supervisor.start_link([], strategy: :one_for_one)
+  end
+
+  @doc false
+  # Latest known version at the time of publishing.
+  def latest_version, do: @latest_version
+
+  @doc """
+  Returns the configured uv version.
+  """
+  def configured_version do
+    Application.get_env(:uv, :version, latest_version())
+  end
+
+  @doc """
+  Returns the configuration for the given profile.
+
+  Returns nil if the profile does not exist.
+  """
+  def config_for!(profile) when is_atom(profile) do
+    Application.get_env(:uv, profile) ||
+      raise ArgumentError, """
+      unknown uv profile. Make sure the profile is defined in your config/config.exs file, such as:
+
+          config :uv,
+            #{profile}: [
+              cd: Path.expand("../python_path", __DIR__),
+              env: %{"ENV_VAR" => "value"}
+            ]
+      """
+  end
 
   @doc """
   Returns the path to the executable.
@@ -11,7 +107,13 @@ defmodule Uv do
   """
   def bin_path do
     name = "uv"
-    Path.expand("_python/#{name}")
+
+    Application.get_env(:uv, :path) ||
+      if Code.ensure_loaded?(Mix.Project) do
+        Path.join(Path.dirname(Mix.Project.build_path()), name)
+      else
+        Path.expand("_build/#{name}")
+      end
   end
 
   @doc """
@@ -38,27 +140,27 @@ defmodule Uv do
   The task output will be streamed directly to stdio. It
   returns the status of the underlying call.
   """
-  def run(args, opts \\ []) when is_list(args) do
-    opts =
-      Keyword.validate!(
-        opts,
-        [
-          :into,
-          :lines,
-          :arg0,
-          :use_stdio,
-          :parallelism,
-          cd: File.cwd!(),
-          env: %{},
-          into: IO.stream(:stdio, :line),
-          stderr_to_stdout: true
-        ]
-      )
+  def run(profile, extra_args) when is_atom(profile) and is_list(extra_args) do
+    config = config_for!(profile)
+    args = (config[:args] || []) ++ extra_args
 
     {_, exit_status} =
-      System.cmd(bin_path(), args, opts)
+      run_uv_command(args,
+        cd: config[:cd] || File.cwd!(),
+        env: config[:env] || %{},
+        into: IO.stream(:stdio, :line),
+        stderr_to_stdout: true
+      )
 
     exit_status
+  end
+
+  defp run_uv_command([], _opts) do
+    raise "no arguments passed to uv"
+  end
+
+  defp run_uv_command(args, opts) do
+    System.cmd(bin_path(), args, opts)
   end
 
   @doc """
@@ -66,12 +168,12 @@ defmodule Uv do
 
   Returns the same as `run/1`.
   """
-  def install_and_run(args) do
+  def install_and_run(profile, args) do
     unless File.exists?(bin_path()) do
       install()
     end
 
-    run(args)
+    run(profile, args)
   end
 
   def install do
@@ -130,7 +232,7 @@ defmodule Uv do
     end
 
     # https://erlef.github.io/security-wg/secure_coding_and_deployment_hardening/inets
-    cacertfile = CAStore.file_path() |> String.to_charlist()
+    cacertfile = cacertfile() |> String.to_charlist()
 
     http_options =
       [
@@ -181,5 +283,9 @@ defmodule Uv do
     else
       _ -> nil
     end
+  end
+
+  defp cacertfile() do
+    Application.get_env(:uv, :cacerts_path) || CAStore.file_path()
   end
 end
